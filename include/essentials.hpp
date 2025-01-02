@@ -50,6 +50,14 @@ struct is_pod {
 #endif
 };
 
+[[maybe_unused]] static std::string demangle(char const* mangled_name) {
+    size_t len = 0;
+    int status = 0;
+    std::unique_ptr<char, decltype(&std::free)> ptr(
+        __cxxabiv1::__cxa_demangle(mangled_name, nullptr, &len, &status), &std::free);
+    return ptr.get();
+}
+
 [[maybe_unused]] static double convert(size_t bytes, uint64_t unit) {
     return static_cast<double>(bytes) / unit;
 }
@@ -61,6 +69,11 @@ static size_t vec_bytes(T const& vec) {
 
 template <typename T>
 static size_t pod_bytes(T const& pod) {
+    static_assert(is_pod<T>::value);
+    return sizeof(pod);
+}
+template <typename T>
+static size_t pod_bytes(const std::string name, T const& pod) {
     static_assert(is_pod<T>::value);
     return sizeof(pod);
 }
@@ -105,6 +118,10 @@ static void load_pod(std::istream& is, T& val) {
     static_assert(is_pod<T>::value);
     is.read(reinterpret_cast<char*>(&val), sizeof(T));
 }
+template <typename T>
+static void load_pod(std::istream& is, const std::string, T& val) {
+    load_pod(is, val);
+}
 
 template <typename T, typename Allocator>
 static void load_vec(std::istream& is, std::vector<T, Allocator>& vec) {
@@ -119,6 +136,48 @@ static void save_pod(std::ostream& os, T const& val) {
     static_assert(is_pod<T>::value);
     os.write(reinterpret_cast<char const*>(&val), sizeof(T));
 }
+template <typename T>
+static void save_pod(std::ostream& os, const std::string name, T const& val) {
+    static_assert(is_pod<T>::value);
+    const std::string type = demangle(typeid(T).name());
+    os << type << " " << name << " = " << val;
+    if (type.find("unsigned long") != std::string::npos)
+        os << "UL";
+    else if (type.find(" long") != std::string::npos)
+        os << "L";
+    os << ";\n";
+}
+
+std::ostream& operator<<(std::ostream& os, __uint128_t value) {
+    if (value == 0) {
+        os << "0";
+        return os;
+    }
+    std::string str;
+    while (value > 0) {
+        str = char('0' + (value % 10)) + str;
+        value /= 10;
+    }
+    os << str;
+    return os;
+}
+std::ostream& operator<<(std::ostream& os, __int128_t value) {
+    if (value < 0) {
+        os << "-";
+        value = -value;
+    }
+    return os << static_cast<__uint128_t>(value);
+}
+
+static void save_pod(std::ostream& os, const std::string name, const __uint128_t val) {
+    if ((uint64_t)(val << 64) > 0)
+        os << "__uint128_t " << name << " = ((__uint128_t)0x" << std::hex
+           << (uint64_t)(val << 64) << ") | 0x" << (uint64_t)(val & UINT64_MAX)
+           << ";\t/* " << std::dec << val << "*/\n";
+    else
+        os << "__uint128_t " << name << " = 0x" << std::hex << (uint64_t)(val & UINT64_MAX)
+           << ";\t/* " << std::dec << val << "*/\n";
+}
 
 template <typename T, typename Allocator>
 static void save_vec(std::ostream& os, std::vector<T, Allocator> const& vec) {
@@ -127,6 +186,25 @@ static void save_vec(std::ostream& os, std::vector<T, Allocator> const& vec) {
     save_pod(os, n);
     os.write(reinterpret_cast<char const*>(vec.data()),
              static_cast<std::streamsize>(sizeof(T) * n));
+}
+template <typename T, typename Allocator>
+static void save_vec(std::ostream& os, const std::string name, std::vector<T, Allocator> const& vec) {
+    static_assert(is_pod<T>::value);
+    size_t n = vec.size();
+    const std::string type = demangle(typeid(T).name());
+    const char *typesuff = "";
+    os << type << " " << name << "[" << n << "] = {\n  ";
+    if (type.find("unsigned long") != std::string::npos)
+        typesuff = "UL";
+    else if (type.find(" long") != std::string::npos)
+        typesuff = "L";
+    size_t i = 0;
+    for (auto v : vec) {
+        os << v << typesuff << (++i == vec.size() ? "" : ", ");
+        if (i % 5 == 0)
+            os << "\n  ";
+    }
+    os << "};\n";
 }
 
 struct json_lines {
@@ -293,6 +371,12 @@ struct generic_loader {
             val.visit(*this);
         }
     }
+    template <typename T>
+    void visit(const std::string, T& val) {
+        visit(val);
+    }
+    void visit(const std::string, const std::string) {
+    }
 
     template <typename T, typename Allocator>
     void visit(std::vector<T, Allocator>& vec) {
@@ -306,6 +390,10 @@ struct generic_loader {
         } else {
             for (auto& v : vec) visit(v);
         }
+    }
+    template <typename T, typename Allocator>
+    void visit(const std::string, std::vector<T, Allocator>& vec) {
+        visit(vec);
     }
 
     size_t bytes() {
@@ -353,6 +441,21 @@ struct generic_saver {
             val.visit(*this);
         }
     }
+    template <typename T>
+    void visit(const std::string name, T& val) {
+        if constexpr (is_pod<T>::value) {
+            save_pod(m_os, name, val);
+        } else {
+            val.visit(name, *this);
+        }
+    }
+
+    void visit(const std::string name, const std::string val) {
+        m_os << "/*const char *" << name << " = \"" << val << "\";*/\n";
+    }
+    //void visit(const std::string name, char *val) {
+    //    m_os << "const char *" << name << " = \"" << val << "\";\n";
+    //}
 
     template <typename T, typename Allocator>
     void visit(std::vector<T, Allocator> const& vec) {
@@ -361,6 +464,16 @@ struct generic_saver {
         } else {
             size_t n = vec.size();
             visit(n);
+            for (auto& v : vec) visit(v);
+        }
+    }
+    template <typename T, typename Allocator>
+    void visit(const std::string name, std::vector<T, Allocator>& vec) {
+        if constexpr (is_pod<T>::value) {
+            save_vec(m_os, name, vec);
+        } else {
+            size_t n = vec.size();
+            visit(name, n);
             for (auto& v : vec) visit(v);
         }
     }
@@ -387,14 +500,6 @@ struct saver : generic_saver {
 private:
     std::ofstream m_os;
 };
-
-[[maybe_unused]] static std::string demangle(char const* mangled_name) {
-    size_t len = 0;
-    int status = 0;
-    std::unique_ptr<char, decltype(&std::free)> ptr(
-        __cxxabiv1::__cxa_demangle(mangled_name, nullptr, &len, &status), &std::free);
-    return ptr.get();
-}
 
 struct sizer {
     sizer(std::string const& root_name = "")
@@ -423,6 +528,16 @@ struct sizer {
             val.visit(*this);
         }
     }
+    template <typename T>
+    void visit(const std::string name, T& val) {
+        if constexpr (is_pod<T>::value) {
+            node n(pod_bytes(val), m_current->depth + 1, demangle(typeid(T).name()));
+            m_current->children.push_back(n);
+            m_current->bytes += n.bytes;
+        } else {
+            val.visit(name, *this);
+        }
+    }
 
     template <typename T, typename Allocator>
     void visit(std::vector<T, Allocator>& vec) {
@@ -439,6 +554,26 @@ struct sizer {
                 parent->children.push_back(n);
                 m_current = &parent->children.back();
                 visit(v);
+                parent->bytes += m_current->bytes;
+            }
+            m_current = parent;
+        }
+    }
+    template <typename T, typename Allocator>
+    void visit(const std::string name, std::vector<T, Allocator>& vec) {
+        if constexpr (is_pod<T>::value) {
+            node n(vec_bytes(vec), m_current->depth + 1, demangle(typeid(std::vector<T>).name()));
+            m_current->children.push_back(n);
+            m_current->bytes += n.bytes;
+        } else {
+            size_t n = vec.size();
+            m_current->bytes += pod_bytes(n);
+            node* parent = m_current;
+            for (auto& v : vec) {
+                node n(0, parent->depth + 1, demangle(typeid(T).name()));
+                parent->children.push_back(n);
+                m_current = &parent->children.back();
+                visit(name, v);
                 parent->bytes += m_current->bytes;
             }
             m_current = parent;
@@ -613,11 +748,21 @@ static size_t visit(T&& data_structure, char const* filename) {
     visitor.visit(data_structure);
     return visitor.bytes();
 }
+template <typename T, typename Visitor>
+static size_t visit(const std::string name, T& data_structure, char const* filename) {
+    Visitor visitor(filename);
+    visitor.visit(name, data_structure);
+    return visitor.bytes();
+}
 
 template <typename T>
 static size_t load(T& data_structure, char const* filename) {
     return visit<loader>(data_structure, filename);
 }
+//template <typename T>
+//static size_t load(const std::string name, T& data_structure, char const* filename) {
+//    return visit<T, loader>(name, data_structure, filename);
+//}
 
 template <typename T>
 static size_t load_with_custom_memory_allocation(T& data_structure, char const* filename) {
@@ -627,6 +772,10 @@ static size_t load_with_custom_memory_allocation(T& data_structure, char const* 
 template <typename T>
 static size_t save(T const& data_structure, char const* filename) {
     return visit<saver>(data_structure, filename);
+}
+template <typename T>
+static size_t save(const std::string name, T& data_structure, char const* filename) {
+    return visit<T, saver>(name, data_structure, filename);
 }
 
 template <typename T, typename Device>

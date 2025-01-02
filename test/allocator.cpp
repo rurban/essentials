@@ -44,6 +44,11 @@ struct basic {
         visit(visitor, *this);
     }
 
+    template <typename Visitor>
+    void visit(const std::string name, Visitor& visitor) {
+        visitor.visit(name, visitor, *this);
+    }
+    
 private:
     int x;
     int y;
@@ -58,6 +63,15 @@ private:
         visitor.visit(t.z);
         visitor.visit(t.m_data1);
         visitor.visit(t.m_data2);
+    }
+    template <typename Visitor>
+    void visit(const std::string name, Visitor& visitor, F&& t) {
+        visitor.visit(name, name);
+        visitor.visit("x", t.x);
+        visitor.visit("y", t.y);
+        visitor.visit("z", t.z);
+        visitor.visit("m_data1", t.m_data1);
+        visitor.visit("m_data2", t.m_data2);
     }
 };
 
@@ -93,6 +107,10 @@ struct complex {
     void visit(Visitor& visitor) const {
         visit_impl(visitor, *this);
     }
+    template <typename Visitor>
+    void visit(const std::string name, Visitor& visitor) {
+        visit_impl(name, visitor, *this);
+    }
 
 private:
     // contiguous_memory_allocator m_allocator;
@@ -104,6 +122,11 @@ private:
     template <typename Visitor, typename F>
     static void visit_impl(Visitor& visitor, F&& t) {
         visitor.visit(t.m_data);
+    }
+    template <typename Visitor>
+    void visit_impl(const std::string name, Visitor& visitor, F&& t) {
+        visitor.visit(name, name);
+        visitor.visit("m_data", t.m_data);
     }
 };
 
@@ -129,6 +152,11 @@ struct wrapper {
     template <typename Visitor>
     void visit(Visitor& visitor) const {
         visit(visitor, *this);
+    }
+    template <typename Visitor>
+    void visit(const std::string name, Visitor& visitor) {
+        visitor.visit(name, name);
+        visitor.visit("m_data", m_data);
     }
 
     /* This function and the allocator are the only two things to add
