@@ -72,11 +72,6 @@ static size_t pod_bytes(T const& pod) {
     static_assert(is_pod<T>::value);
     return sizeof(pod);
 }
-template <typename T>
-static size_t pod_bytes(const std::string name, T const& pod) {
-    static_assert(is_pod<T>::value);
-    return sizeof(pod);
-}
 
 [[maybe_unused]] static size_t file_size(char const* filename) {
     std::ifstream is(filename, std::ios::binary | std::ios::ate);
@@ -140,12 +135,13 @@ template <typename T>
 static void save_pod(std::ostream& os, const std::string name, T const& val) {
     static_assert(is_pod<T>::value);
     const std::string type = demangle(typeid(T).name());
-    os << type << " " << name << " = " << val;
+    if (name.size())
+        os << "/*" << type << " " << name << "*/ ";
+    os << val;
     if (type.find("unsigned long") != std::string::npos)
         os << "UL";
     else if (type.find(" long") != std::string::npos)
         os << "L";
-    os << ";\n";
 }
 
 std::ostream& operator<<(std::ostream& os, __uint128_t value) {
@@ -170,13 +166,14 @@ std::ostream& operator<<(std::ostream& os, __int128_t value) {
 }
 
 static void save_pod(std::ostream& os, const std::string name, const __uint128_t val) {
+    if (name.size())
+        os << "/*__uint128_t " << name << "*/ ";
     if ((uint64_t)(val << 64) > 0)
-        os << "__uint128_t " << name << " = ((__uint128_t)0x" << std::hex
-           << (uint64_t)(val << 64) << ") | 0x" << (uint64_t)(val & UINT64_MAX)
-           << ";\t/* " << std::dec << val << "*/\n";
+        os << "((__uint128_t)0x" << std::hex
+           << (uint64_t)(val << 64) << " | 0x" << (uint64_t)(val & UINT64_MAX)
+           << ")" << std::dec;
     else
-        os << "__uint128_t " << name << " = 0x" << std::hex << (uint64_t)(val & UINT64_MAX)
-           << ";\t/* " << std::dec << val << "*/\n";
+        os << "(__uint128_t)0x" << std::hex << (uint64_t)(val & UINT64_MAX) << std::dec;
 }
 
 template <typename T, typename Allocator>
@@ -193,7 +190,8 @@ static void save_vec(std::ostream& os, const std::string name, std::vector<T, Al
     size_t n = vec.size();
     const std::string type = demangle(typeid(T).name());
     const char *typesuff = "";
-    os << type << " " << name << "[" << n << "] = {\n  ";
+    os << "/*" << type << " " << name << "[" << n << "]*/";
+    os << "{";
     if (type.find("unsigned long") != std::string::npos)
         typesuff = "UL";
     else if (type.find(" long") != std::string::npos)
@@ -201,10 +199,10 @@ static void save_vec(std::ostream& os, const std::string name, std::vector<T, Al
     size_t i = 0;
     for (auto v : vec) {
         os << v << typesuff << (++i == vec.size() ? "" : ", ");
-        if (i % 5 == 0)
+        if (i % 4 == 0 && i != vec.size())
             os << "\n  ";
     }
-    os << "};\n";
+    os << "}";
 }
 
 struct json_lines {
@@ -434,6 +432,12 @@ struct generic_saver {
         : m_os(os) {}
 
     template <typename T>
+    void dump(T& val) {
+        //assert(is_pod<T>::value);
+        m_os << val;
+    }
+
+    template <typename T>
     void visit(T const& val) {
         if constexpr (is_pod<T>::value) {
             save_pod(m_os, val);
@@ -449,13 +453,18 @@ struct generic_saver {
             val.visit(name, *this);
         }
     }
-
     void visit(const std::string name, const std::string val) {
-        m_os << "/*const char *" << name << " = \"" << val << "\";*/\n";
+        (void)name;
+        // FIXME escape val
+        m_os << "\"" << val << "\"";
     }
     //void visit(const std::string name, char *val) {
     //    m_os << "const char *" << name << " = \"" << val << "\";\n";
     //}
+    void visit(const std::string val) {
+        // FIXME escape val
+        m_os << val;
+    }
 
     template <typename T, typename Allocator>
     void visit(std::vector<T, Allocator> const& vec) {
@@ -468,13 +477,33 @@ struct generic_saver {
         }
     }
     template <typename T, typename Allocator>
+    void visit(std::vector<T, Allocator>& vec) {
+        if constexpr (is_pod<T>::value) {
+            save_vec(m_os, vec);
+        } else {
+            size_t n = vec.size();
+            visit(n);
+            for (auto& v : vec) visit(v);
+        }
+    }
+    template <typename T, typename Allocator>
+    void visit(const std::string name, std::vector<T, Allocator> const& vec) {
+        if constexpr (is_pod<T>::value) {
+            save_vec(m_os, name, vec);
+        } else {
+            size_t n = vec.size();
+            visit(name, n);
+            for (auto& v : vec) visit(v); // no name comments
+        }
+    }
+    template <typename T, typename Allocator>
     void visit(const std::string name, std::vector<T, Allocator>& vec) {
         if constexpr (is_pod<T>::value) {
             save_vec(m_os, name, vec);
         } else {
             size_t n = vec.size();
             visit(name, n);
-            for (auto& v : vec) visit(v);
+            for (auto& v : vec) visit(v); // no name comments
         }
     }
 
