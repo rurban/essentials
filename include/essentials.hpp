@@ -197,10 +197,13 @@ static void save_vec(std::ostream& os, const std::string name, std::vector<T, Al
     else if (type.find(" long") != std::string::npos)
         typesuff = "L";
     size_t i = 0;
+    const int count = sizeof(T) >= 8 ? 4 : 10;
     for (auto v : vec) {
-        os << v << typesuff << (++i == vec.size() ? "" : ", ");
-        if (i % 4 == 0 && i != vec.size())
+        os << v << typesuff << (++i == vec.size() ? "" : ",");
+        if (i % count == 0 && i != vec.size())
             os << "\n  ";
+        else
+            os << " ";
     }
     os << "}";
 }
@@ -525,6 +528,14 @@ struct saver : generic_saver {
                 "file.");
         }
     }
+    saver(char const* filename, std::ios_base::openmode mode)
+        : generic_saver(m_os)
+        , m_os(filename, std::ios::out | mode) {
+        if (!m_os.good()) {
+            throw std::runtime_error(
+                "Error opening file.");
+        }
+    }
 
 private:
     std::ofstream m_os;
@@ -784,6 +795,14 @@ static size_t visit(const std::string name, T& data_structure, char const* filen
     return visitor.bytes();
 }
 
+template <typename T, typename Visitor>
+static size_t visit(const std::string name, T& data_structure, char const* filename,
+                    std::ios_base::openmode mode) {
+    Visitor visitor(filename, mode);
+    visitor.visit(name, data_structure);
+    return visitor.bytes();
+}
+
 template <typename T>
 static size_t load(T& data_structure, char const* filename) {
     return visit<loader>(data_structure, filename);
@@ -805,6 +824,11 @@ static size_t save(T const& data_structure, char const* filename) {
 template <typename T>
 static size_t save(const std::string name, T& data_structure, char const* filename) {
     return visit<T, saver>(name, data_structure, filename);
+}
+template <typename T>
+static size_t save(const std::string name, T& data_structure, char const* filename,
+                   std::ios_base::openmode mode) {
+    return visit<T, saver>(name, data_structure, filename, mode);
 }
 
 template <typename T, typename Device>
